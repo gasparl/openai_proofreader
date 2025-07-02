@@ -18,10 +18,13 @@ from collections import deque
 AVAILABLE_MODELS = [
     "gpt-4o",
     "gpt-4.1",
-    "o3",
-    "o3-pro",
-    "o3-mini-high",
+    "gpt-4o-mini",
+    "o1",
+    "o1-mini",
+    "o1-pro",
+    "o3-mini",
 ]
+
 DEFAULT_MODEL = "gpt-4o"
 # --------------------------------------
 
@@ -32,12 +35,15 @@ CONCURRENCY = 2      # ≤2 for gpt-4.1 to avoid 429s
 
 # Token/minute rate limits (adjust if needed per model):
 TPM_LIMITS = {
-    "gpt-4o": 60_000,
-    "gpt-4.1": 30_000,
-    "o3": 90_000,         # Check docs for true limits!
-    "o3-pro": 90_000,
-    "o3-mini-high": 90_000,
+    "gpt-4o":     30_000,
+    "gpt-4.1":    30_000,
+    "gpt-4o-mini":200_000,
+    "o1":         30_000,
+    "o1-mini":    200_000,
+    "o1-pro":     30_000,
+    "o3-mini":    200_000,
 }
+
 WINDOW = 60  # seconds
 
 WRITE_EVERY = 5   # How often to save the report-in-progress (set 1 to write after each)
@@ -155,15 +161,27 @@ async def proofread(chunk: str, model_name: str, limiter: TokenLimiter, section_
                 await limiter.throttle(prompt_tokens + chunk_tokens + max_completion)
                 if section_num is not None and total is not None:
                     logger.info(f"Proofreading section {section_num}/{total} ...")
+                    
+                # choose the right length-limit parameter
+                if model_name.startswith(("o", "gpt-4o", "gpt-4.1")):
+                    # “reasoning” or new GPT-4o models
+                    length_kwarg = {"max_completion_tokens":  max_completion}
+                    # o-series ignores temperature/top_p etc.
+                else:
+                    length_kwarg = {
+                        "max_tokens": max_completion,
+                        "temperature": 0.1
+                    }
+                
                 resp = await client.chat.completions.create(
                     model=model_name,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": chunk}
                     ],
-                    max_tokens=max_completion,
-                    temperature=0.1
+                    **length_kwarg
                 )
+
                 return resp.choices[0].message.content.strip()
             except (RateLimitError, APIConnectionError, APITimeoutError) as e:
                 if attempt == RETRIES - 1:
