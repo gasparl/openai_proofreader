@@ -16,8 +16,8 @@ from collections import deque
 
 # --- Model selection (change here!) ---
 AVAILABLE_MODELS = [
-    "gpt-4o",
     "gpt-4.1",
+    "gpt-4o",
     "gpt-4o-mini",
     "o1",
     "o1-mini",
@@ -25,7 +25,7 @@ AVAILABLE_MODELS = [
     "o3-mini",
 ]
 
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "gpt-4.1"
 # --------------------------------------
 
 CHUNK_TOKENS = 800
@@ -35,8 +35,8 @@ CONCURRENCY = 2      # ≤2 for gpt-4.1 to avoid 429s
 
 # Token/minute rate limits (adjust if needed per model):
 TPM_LIMITS = {
-    "gpt-4o":     30_000,
     "gpt-4.1":    30_000,
+    "gpt-4o":     30_000,
     "gpt-4o-mini":200_000,
     "o1":         30_000,
     "o1-mini":    200_000,
@@ -83,11 +83,11 @@ def token_len(text: str, model_name=DEFAULT_MODEL) -> int:
 def read_docx(path: str) -> list[str]:
     return [p.text for p in Document(str(path)).paragraphs if p.text.strip()]
 
+
 def split_paragraphs(paragraphs: list[str], model_name=DEFAULT_MODEL) -> list[str]:
     chunks, current, tokens = [], [], 0
     for p in paragraphs:
         p_tokens = token_len(p, model_name) + 1  # newline
-        # If single paragraph too long, split it by sentence
         if p_tokens > CHUNK_TOKENS:
             import re
             sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', p.replace('\n', ' ')) if s.strip()]
@@ -95,14 +95,13 @@ def split_paragraphs(paragraphs: list[str], model_name=DEFAULT_MODEL) -> list[st
             for s in sents:
                 s_token = token_len(s, model_name) + 1
                 if sent_tokens + s_token > CHUNK_TOKENS and sent_chunk:
-                    chunks.append(". ".join(sent_chunk))
+                    chunks.append(" ".join(sent_chunk))
                     sent_chunk, sent_tokens = [], 0
                 sent_chunk.append(s)
                 sent_tokens += s_token
             if sent_chunk:
-                chunks.append(". ".join(sent_chunk))
+                chunks.append(" ".join(sent_chunk))
             continue
-
         if tokens + p_tokens > CHUNK_TOKENS and current:
             chunks.append("\n".join(current))
             current, tokens = [], 0
@@ -114,8 +113,7 @@ def split_paragraphs(paragraphs: list[str], model_name=DEFAULT_MODEL) -> list[st
 
 SYSTEM_PROMPT = (
     "Vizsgáld meg, hogy az adott teljes szekcióban található-e bármilyen egyértelmű "
-    "helyesírási, elírási, ragozási vagy nyelvtani egyeztetési hiba, különösen az "
-    "egybe- és különírás (pl. mindeközben vs. mind eközben) esetében. "
+    "helyesírási, elírási vagy nyelvtani hiba. "
     "A tárgyas ragozás elhagyása (pl. »fogom a fejem« a »fogom a fejemet« helyett) "
     "nem számít hibának. Ne javasolj stilisztikai, stílus- vagy tartalmi átfogalmazást, és ne írd át a szöveget. "
     "A talált hibákat pontokba szedve sorold fel: idézd a problémás részletet, majd adj rövid magyarázatot "
@@ -251,7 +249,7 @@ def run_async(coro):
 
 # -------------- Interactive "one-liner" function --------------
 def easy_proofread(
-    model="gpt-4o",
+    model= DEFAULT_MODEL,
     input_docx="input.docx",
     output_txt=None,
 ):
