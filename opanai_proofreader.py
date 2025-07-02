@@ -28,7 +28,7 @@ MAX_COMPLETION_TOKENS = 800
 RETRIES = 5
 CONCURRENCY = 5
 
-script_dir = Path(__file__).resolve().parent
+script_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 config_path = Path(script_dir, "config.json")
 
 try:
@@ -71,12 +71,12 @@ def split_paragraphs(paragraphs: list[str], model_name=DEFAULT_MODEL) -> list[st
             for s in sents:
                 s_token = token_len(s, model_name) + 1
                 if sent_tokens + s_token > CHUNK_TOKENS and sent_chunk:
-                    chunks.append(" ".join(sent_chunk))
+                    chunks.append(". ".join(sent_chunk))
                     sent_chunk, sent_tokens = [], 0
                 sent_chunk.append(s)
                 sent_tokens += s_token
             if sent_chunk:
-                chunks.append(" ".join(sent_chunk))
+                chunks.append(". ".join(sent_chunk))
             continue
 
         if tokens + p_tokens > CHUNK_TOKENS and current:
@@ -163,24 +163,78 @@ async def main(input_docx: str, output_txt: str, model_name: str):
     output_path.write_text("".join(out_lines), encoding="utf-8")
     logging.info(f"Proofreading completed. Output written to {output_path}")
 
-if __name__ == "__main__":
-    # Windows event loop policy fix
+# -------------- Universal Async Runner Helper --------------
+def run_async(coro):
+    """
+    Run a coroutine in any environment: terminal, Spyder, or Jupyter.
+    """
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import nest_asyncio
+        nest_asyncio.apply()
+        task = loop.create_task(coro)
+        loop.run_until_complete(task)
+    else:
+        asyncio.run(coro)
+
+# -------------- Interactive "one-liner" function --------------
+def easy_proofread(
+    model="gpt-4o",
+    input_docx="input.docx",
+    output_txt=None,
+):
+    """
+    Run proofreading with a chosen model, input, and (optional) output filename.
+    - model:       Model name as string, e.g. 'gpt-4o', 'o3', etc.
+    - input_docx:  Input DOCX filename (str or Path)
+    - output_txt:  Output TXT filename (str or Path). If None, auto-generates.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    import sys
+
+    script_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+    input_path = Path(script_dir, input_docx)
+    now = datetime.now().strftime('%Y%m%d_%H%M')
+    output_path = Path(script_dir, output_txt) if output_txt else Path(
+        script_dir, f"proofreading_report_{model}_{now}.txt"
+    )
+    # Windows event loop fix for Spyder/Windows
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    print(f"\nProofreading {input_path} with {model} ...\n")
+    run_async(main(input_path, output_path, model))
+    print(f"\nDone! Output saved to {output_path}\n")
 
-    parser = argparse.ArgumentParser(description="Proofread a DOCX using an OpenAI model.")
-    parser.add_argument("--model", type=str, choices=AVAILABLE_MODELS, default=DEFAULT_MODEL, help="OpenAI model to use")
-    parser.add_argument("--input", type=str, default="input.docx", help="Input DOCX file")
-    parser.add_argument("--output", type=str, default=None, help="Output TXT file (default: auto-named)")
-    args = parser.parse_args()
+# -------------- Command-line interface --------------
+if __name__ == "__main__":
+    # Run CLI only if extra command-line arguments were supplied
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(description="Proofread a DOCX using an OpenAI model.")
+        parser.add_argument("--model", type=str, choices=AVAILABLE_MODELS, default=DEFAULT_MODEL, help="OpenAI model to use")
+        parser.add_argument("--input", type=str, default="input.docx", help="Input DOCX file")
+        parser.add_argument("--output", type=str, default=None, help="Output TXT file (default: auto-named)")
+        args = parser.parse_args()
+        input_docx = Path(script_dir, args.input)
+        now = datetime.now().strftime('%Y%m%d_%H%M')
+        output_txt = (
+            Path(script_dir, args.output)
+            if args.output else
+            Path(script_dir, f"proofreading_report_{args.model}_{now}.txt")
+        )
+        run_async(main(input_docx, output_txt, args.model))
 
-    # Absolute paths from script_dir
-    input_docx = Path(script_dir, args.input)
-    now = datetime.now().strftime('%Y%m%d_%H%M')
-    output_txt = (
-        Path(script_dir, args.output)
-        if args.output else
-        Path(script_dir, f"proofreading_report_{args.model}_{now}.txt")
-    )
+# -------------- Example one-liners for Spyder/Jupyter --------------
+# Uncomment and edit as needed for your workflow:
 
-    asyncio.run(main(input_docx, output_txt, args.model))
+# easy_proofread()  # Default: gpt-4o, input.docx
+# easy_proofread(model="o3")
+# easy_proofread(input_docx="my_paper.docx")
+# easy_proofread(model="o3-pro", input_docx="report.docx", output_txt="proofed_report.txt")
+# easy_proofread(model="gpt-4.1", input_docx="document.docx")
+
