@@ -1,7 +1,7 @@
 # Docx Proofreader with OpenAI
 
 This repository provides a Python script for **proofreading `.docx` documents using OpenAI models**.
-The script checks for spelling, grammar, and agreement errors in Hungarian or any language, splits large texts into manageable chunks, and saves a detailed error report in plain text format.
+The script checks for spelling, grammar, and agreement errors in any language, splits large texts into manageable chunks, and saves a detailed error report in plain text format.
 
 ---
 
