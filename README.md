@@ -80,7 +80,7 @@ Create a `config.json` file in the same directory as the script and add your Ope
 
 * The report is saved as a plain text `.txt` file.
 * The file header shows the date, model name, and source file.
-* Each section (“szakasz”) corresponds to a chunk of your document, with errors listed and explained.
+* Each section corresponds to a chunk of your document, with errors listed and explained.
 * If no errors are found, the report will state so.
 
 ---
