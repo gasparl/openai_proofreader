@@ -3,6 +3,7 @@ import json
 import logging
 import random
 import sys
+import time
 from pathlib import Path
 from functools import lru_cache
 from openai import AsyncOpenAI
@@ -11,6 +12,7 @@ from docx import Document
 import tiktoken
 from datetime import datetime
 import argparse
+from collections import deque
 
 # --- Model selection (change here!) ---
 AVAILABLE_MODELS = [
@@ -26,10 +28,31 @@ DEFAULT_MODEL = "gpt-4o"
 CHUNK_TOKENS = 2048
 MAX_COMPLETION_TOKENS = 800
 RETRIES = 5
-CONCURRENCY = 5
+CONCURRENCY = 2      # ≤2 for gpt-4.1 to avoid 429s
+
+# Token/minute rate limits (adjust if needed per model):
+TPM_LIMITS = {
+    "gpt-4o": 60_000,
+    "gpt-4.1": 30_000,
+    "o3": 90_000,         # Check docs for true limits!
+    "o3-pro": 90_000,
+    "o3-mini-high": 90_000,
+}
+WINDOW = 60  # seconds
+
+WRITE_EVERY = 5   # How often to save the report-in-progress (set 1 to write after each)
 
 script_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 config_path = Path(script_dir, "config.json")
+
+# Set up logging: silence OpenAI SDK's HTTP logs, keep our own info
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+for noisy in ("openai", "httpx", "httpcore"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 try:
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -39,11 +62,6 @@ except Exception as e:
     raise SystemExit(1)
 
 client = AsyncOpenAI(api_key=api_key)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
 
 @lru_cache(maxsize=1)
 def _encoder(model_name=DEFAULT_MODEL):
@@ -97,20 +115,43 @@ SYSTEM_PROMPT = (
     "Ha nem találsz nyilvánvaló hibát, mondd, hogy nincs hiba."
 )
 
+# -- Token/minute limiter --
+class TokenLimiter:
+    def __init__(self, model):
+        self.limit = TPM_LIMITS.get(model, 30_000)
+        self.window = WINDOW
+        self.tokens_window = deque()
+        self.lock = asyncio.Lock()
+    async def throttle(self, tokens: int):
+        async with self.lock:
+            now = time.time()
+            while self.tokens_window and now - self.tokens_window[0][0] > self.window:
+                self.tokens_window.popleft()
+            used = sum(t for _, t in self.tokens_window)
+            if used + tokens > self.limit:
+                to_wait = self.window - (now - self.tokens_window[0][0]) + 0.05
+                to_wait = max(to_wait, 0.1)
+                logger.info(f"TPM limit reached, sleeping {to_wait:.1f} sec...")
+                await asyncio.sleep(to_wait)
+            self.tokens_window.append((time.time(), tokens))
+
+# Concurrency limiter (set above)
 sem = asyncio.Semaphore(CONCURRENCY)
 
-async def proofread(chunk: str, model_name: str) -> str:
+async def proofread(chunk: str, model_name: str, limiter: TokenLimiter, section_num=None, total=None) -> str:
     async with sem:
         for attempt in range(RETRIES):
             try:
                 prompt_tokens = token_len(SYSTEM_PROMPT, model_name)
                 chunk_tokens = token_len(chunk, model_name)
-                # Set context window (gpt-4o/o3: 128k, gpt-4.1: 1M)
+                # Defensive context window: gpt-4.1 supports 1M, others 128k
                 limit = 1_000_000 if model_name.startswith("gpt-4.1") else 128_000
                 available = limit - prompt_tokens - chunk_tokens
-                if available <= 0:
-                    raise ValueError("Chunk plus prompt exceeds model context window")
                 max_completion = min(MAX_COMPLETION_TOKENS, max(32, available))
+                # Throttle for TPM
+                await limiter.throttle(prompt_tokens + chunk_tokens + max_completion)
+                if section_num is not None and total is not None:
+                    logger.info(f"Proofreading section {section_num}/{total} ...")
                 resp = await client.chat.completions.create(
                     model=model_name,
                     messages=[
@@ -125,7 +166,7 @@ async def proofread(chunk: str, model_name: str) -> str:
                 if attempt == RETRIES - 1:
                     raise
                 wait = 2 ** attempt + random.random()
-                logging.warning(f"{type(e).__name__}: {e}. Retrying in {wait:.1f}s")
+                logger.warning(f"{type(e).__name__}: {e}. Retrying in {wait:.1f}s")
                 await asyncio.sleep(wait)
             except OpenAIError as e:
                 raise
@@ -134,14 +175,12 @@ async def main(input_docx: str, output_txt: str, model_name: str):
     try:
         paragraphs = read_docx(input_docx)
     except Exception as e:
-        logging.error(f"Failed to read DOCX: {e}")
+        logger.error(f"Failed to read DOCX: {e}")
         return
 
     chunks = split_paragraphs(paragraphs, model_name)
-    logging.info(f"{len(chunks)} chunks to proofread.")
-
-    tasks = [proofread(c, model_name) for c in chunks]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    total = len(chunks)
+    logger.info(f"{total} chunks to proofread.")
 
     now = datetime.now().strftime('%Y%m%d_%H%M')
     header = (
@@ -154,14 +193,21 @@ async def main(input_docx: str, output_txt: str, model_name: str):
 
     output_path = Path(output_txt)
     out_lines = [header]
-    for i, r in enumerate(results, 1):
-        if isinstance(r, Exception):
-            logging.error(f"Chunk {i} failed: {r}")
-            out_lines.append(f"-- Szakasz {i} --\nHiba történt az ellenőrzés során: {r}\n\n")
-        else:
-            out_lines.append(f"-- Szakasz {i} --\n{r}\n\n")
-    output_path.write_text("".join(out_lines), encoding="utf-8")
-    logging.info(f"Proofreading completed. Output written to {output_path}")
+    limiter = TokenLimiter(model_name)
+
+    for i, chunk in enumerate(chunks, 1):
+        try:
+            result = await proofread(chunk, model_name, limiter, section_num=i, total=total)
+        except Exception as e:
+            logger.error(f"Chunk {i} failed: {e}")
+            result = f"Error during proofreading: {e}"
+        out_lines.append(f"-- Section {i} --\n{result}\n\n")
+
+        if i % WRITE_EVERY == 0 or i == total:
+            output_path.write_text("".join(out_lines), encoding="utf-8")
+            logger.info(f"Progress saved ({i}/{total} sections).")
+
+    logger.info(f"Proofreading completed. Output written to {output_path}")
 
 # -------------- Universal Async Runner Helper --------------
 def run_async(coro):
@@ -231,10 +277,8 @@ if __name__ == "__main__":
 
 # -------------- Example one-liners for Spyder/Jupyter --------------
 # Uncomment and edit as needed for your workflow:
-
 # easy_proofread()  # Default: gpt-4o, input.docx
 # easy_proofread(model="o3")
 # easy_proofread(input_docx="my_paper.docx")
 # easy_proofread(model="o3-pro", input_docx="report.docx", output_txt="proofed_report.txt")
 # easy_proofread(model="gpt-4.1", input_docx="document.docx")
-
