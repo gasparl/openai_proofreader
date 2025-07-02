@@ -25,8 +25,8 @@ AVAILABLE_MODELS = [
 DEFAULT_MODEL = "gpt-4o"
 # --------------------------------------
 
-CHUNK_TOKENS = 2048
-MAX_COMPLETION_TOKENS = 800
+CHUNK_TOKENS = 800
+MAX_COMPLETION_TOKENS = 256
 RETRIES = 5
 CONCURRENCY = 2      # ≤2 for gpt-4.1 to avoid 429s
 
@@ -107,12 +107,15 @@ def split_paragraphs(paragraphs: list[str], model_name=DEFAULT_MODEL) -> list[st
     return chunks
 
 SYSTEM_PROMPT = (
-    "Ellenőrizd, van-e benne egyértelmű helyesírási, elírási, ragozási vagy nyelvtani egyeztetési hiba, "
-    "különös figyelmet fordítva az egybe- és különírási esetekre (pl. mindeközben vs. mind eközben). "
-    "Ne javasolj stílus- vagy tartalmi átfogalmazást, és ne írd át a szöveget. "
-    "A hibákat pontokba szedve sorold fel: idézd a problémás részletet, majd adj rövid magyarázatot "
-    "(pl. „szabadag - elírás, helyesen szabadság”). "
-    "Ha nem találsz nyilvánvaló hibát, mondd, hogy nincs hiba."
+    "Vizsgáld meg, hogy az adott teljes szekcióban található-e bármilyen egyértelmű "
+    "helyesírási, elírási, ragozási vagy nyelvtani egyeztetési hiba, különösen az "
+    "egybe- és különírás (pl. mindeközben vs. mind eközben) esetében. "
+    "A tárgyas ragozás elhagyása (pl. »fogom a fejem« a »fogom a fejemet« helyett) "
+    "nem számít hibának. Ne javasolj stilisztikai, stílus- vagy tartalmi átfogalmazást, és ne írd át a szöveget. "
+    "A talált hibákat pontokba szedve sorold fel: idézd a problémás részletet, majd adj rövid magyarázatot "
+    "(pl. »tűnődőm - elírás, helyesen tűnődöm«). "
+    "Ha az adott teljes szekcióban egyetlen nyilvánvaló hibát sem találsz, "
+    "válaszolj teljesen üres sztringgel — ne küldj semmilyen karaktert, sortörést vagy szóközt."
 )
 
 # -- Token/minute limiter --
